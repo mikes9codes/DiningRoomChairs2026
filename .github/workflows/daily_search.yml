@@ -17,12 +17,12 @@ jobs:
     name: Search for 12-Chair Sets
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: claude/dining-chair-search-tool-WF1IC
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -56,7 +56,7 @@ jobs:
           print(f\"Platforms      : {', '.join(s.get('sources', []))}\")
           avg = s.get('avg_price', 0)
           if avg:
-              print(f\"Avg price      : ${avg:,.0f}\")
+              print(f\"Avg price      : \${avg:,.0f}\")
           "
 
       - name: Commit updated results
