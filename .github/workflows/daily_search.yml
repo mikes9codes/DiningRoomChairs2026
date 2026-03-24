@@ -5,12 +5,14 @@ on:
     # Run every day at 8:00 AM UTC
     - cron: '0 8 * * *'
   workflow_dispatch:
-    # Allow manual trigger from GitHub Actions UI
     inputs:
       debug:
         description: 'Enable debug logging'
         required: false
         default: 'false'
+
+permissions:
+  contents: write
 
 jobs:
   search:
@@ -23,6 +25,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -37,8 +41,8 @@ jobs:
 
       - name: Run chair search
         env:
-          SERP_API_KEY:  ${{ secrets.SERP_API_KEY }}
-          EBAY_APP_ID:   ${{ secrets.EBAY_APP_ID }}
+          SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
+          EBAY_APP_ID: ${{ secrets.EBAY_APP_ID }}
           PYTHONUNBUFFERED: '1'
         run: |
           python run_scraper.py
@@ -46,8 +50,12 @@ jobs:
       - name: Show results summary
         run: |
           python -c "
-          import json, sys
-          with open('data/results.json') as f:
+          import json, os, sys
+          path = 'data/results.json'
+          if not os.path.exists(path):
+              print('No results file found.')
+              sys.exit(0)
+          with open(path) as f:
               data = json.load(f)
           s = data.get('search_stats', {})
           print(f\"Total listings : {s.get('total', 0)}\")
@@ -68,5 +76,5 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "chore: daily search update $(date +'%Y-%m-%d')"
-            git push
+            git push origin HEAD
           fi
