@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """Multi-source scraper for sets of 12 dining chairs.
 
-Sources:
-  USA    - eBay, Craigslist (20 cities), Chairish, Etsy, LiveAuctioneers
-  Intl   - eBay UK/CA/AU/DE/FR/IT, Pamono, Sellingantiques
+Primary sources (API-based, reliable):
+  - SerpAPI Google Shopping
+  - SerpAPI eBay search
+  - eBay Finding API
+
+Fallback sources (HTML scraping, may be blocked):
+  - Craigslist RSS, Chairish, 1stDibs, Etsy, LiveAuctioneers, Pamono
 """
 
 import hashlib
 import json
 import logging
+import os
 import re
 import time
-from datetime import datetime
-from urllib.parse import quote_plus, urljoin
-
 import xml.etree.ElementTree as ET
+from datetime import datetime
+from urllib.parse import quote_plus, urlencode
+
 import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+SERP_API_KEY = os.environ.get('SERP_API_KEY', '')
+EBAY_APP_ID  = os.environ.get('EBAY_APP_ID', '')
 
 HEADERS = {
     'User-Agent': (
@@ -30,10 +34,8 @@ HEADERS = {
         'AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/122.0.0.0 Safari/537.36'
     ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
 }
 
 CRAIGSLIST_CITIES = [
@@ -80,7 +82,6 @@ US_CITIES = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 def _id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:14]
 
@@ -88,42 +89,34 @@ def _id(url: str) -> str:
 def parse_price(s: str) -> float | None:
     if not s:
         return None
-    s = re.sub(r'[^\d.,]', '', s.replace(',', ''))
-    parts = re.split(r'[^\d.]', s)
-    for p in parts:
-        try:
-            v = float(p)
-            if v > 0:
-                return v
-        except ValueError:
-            continue
-    return None
+    s = re.sub(r'[^\d.]', '', s.replace(',', ''))
+    try:
+        v = float(s)
+        return v if v > 0 else None
+    except ValueError:
+        return None
 
 
 def is_usa(location: str) -> bool:
     if not location:
         return False
     loc = location.lower().strip()
-    # Explicit USA / United States
     if any(x in loc for x in ('united states', 'usa', 'u.s.a')):
         return True
-    # State abbreviations (e.g. ", NY" or "NY, US")
     for abbr in US_STATE_ABBRS:
         if re.search(r'\b' + abbr + r'\b', location):
             return True
-    # Known city names
     for city in US_CITIES:
         if city in loc:
             return True
-    # US ZIP code
     if re.search(r'\b\d{5}\b', location):
         return True
     return False
 
 
-def _get(url: str, timeout: int = 15) -> requests.Response | None:
+def _get(url: str, timeout: int = 15, params: dict = None) -> requests.Response | None:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        r = requests.get(url, headers=HEADERS, params=params, timeout=timeout)
         r.raise_for_status()
         return r
     except Exception as e:
@@ -134,11 +127,12 @@ def _get(url: str, timeout: int = 15) -> requests.Response | None:
 def _make_listing(**kwargs) -> dict:
     loc = kwargs.get('location', '')
     usa_flag = kwargs.get('is_usa', is_usa(loc))
+    price_str = kwargs.get('price', 'See listing')
     return {
         'id': kwargs.get('id', _id(kwargs.get('listing_url', '') or kwargs.get('title', ''))),
         'title': kwargs.get('title', ''),
-        'price': kwargs.get('price', 'See listing'),
-        'price_numeric': kwargs.get('price_numeric', parse_price(kwargs.get('price', ''))),
+        'price': price_str,
+        'price_numeric': kwargs.get('price_numeric', parse_price(price_str)),
         'description': kwargs.get('description', ''),
         'image_url': kwargs.get('image_url', ''),
         'listing_url': kwargs.get('listing_url', ''),
@@ -153,127 +147,200 @@ def _make_listing(**kwargs) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# eBay USA
+# SerpAPI — Google Shopping  (primary, reliable)
 # ---------------------------------------------------------------------------
 
+def scrape_serp_google_shopping(query: str = 'set of 12 dining chairs') -> list[dict]:
+    if not SERP_API_KEY:
+        logger.info('  SerpAPI Google Shopping: skipped (no API key)')
+        return []
 
-def scrape_ebay_us(query: str = 'set of 12 dining chairs') -> list[dict]:
     listings = []
-    encoded = quote_plus(query)
-    # Buy It Now + best match
-    for suffix in ['&LH_BIN=1', '&LH_Auction=1']:
-        url = f'https://www.ebay.com/sch/i.html?_nkw={encoded}&_sop=10{suffix}&_ipg=48'
-        r = _get(url)
+    # Run two searches: general + used/vintage
+    searches = [query, f'{query} used vintage antique']
+    for q in searches:
+        params = {
+            'engine': 'google_shopping',
+            'q': q,
+            'api_key': SERP_API_KEY,
+            'num': 40,
+            'gl': 'us',
+            'hl': 'en',
+        }
+        r = _get('https://serpapi.com/search', params=params)
         if not r:
             continue
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for item in soup.select('.s-item'):
-            try:
-                title_el = item.select_one('.s-item__title')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                if 'Shop on eBay' in title:
-                    continue
+        try:
+            data = r.json()
+        except Exception:
+            continue
 
-                link_el = item.select_one('a.s-item__link')
-                url_listing = link_el['href'].split('?')[0] if link_el else ''
-
-                price_el = item.select_one('.s-item__price')
-                price_str = price_el.get_text(strip=True) if price_el else ''
-
-                img_el = item.select_one('.s-item__image-wrapper img')
-                img = ''
-                if img_el:
-                    img = img_el.get('src') or img_el.get('data-src', '')
-
-                loc_el = item.select_one('.s-item__location')
-                location = loc_el.get_text(strip=True).replace('Located in:', '').strip() if loc_el else 'USA'
-
-                cond_el = item.select_one('.SECONDARY_INFO')
-                condition = cond_el.get_text(strip=True) if cond_el else 'See listing'
-
-                listings.append(_make_listing(
-                    id=_id(url_listing or title),
-                    title=title,
-                    price=price_str,
-                    image_url=img,
-                    listing_url=url_listing,
-                    source='eBay',
-                    source_type='auction/marketplace',
-                    location=location,
-                    condition=condition,
-                ))
-            except Exception:
+        for item in data.get('shopping_results', []):
+            title = item.get('title', '')
+            if not title:
                 continue
-        time.sleep(1.5)
-    logger.info(f"  eBay US: {len(listings)} listings")
+            price_str = item.get('price', 'See listing')
+            price_num = item.get('extracted_price') or parse_price(price_str)
+            link = item.get('link', '')
+            img = item.get('thumbnail', '')
+            source_name = item.get('source', 'Google Shopping')
+            delivery = item.get('delivery', '')
+            # Try to determine location from delivery info or source
+            location = 'USA'
+            listings.append(_make_listing(
+                id=_id(link or title),
+                title=title,
+                price=price_str,
+                price_numeric=price_num,
+                image_url=img,
+                listing_url=link,
+                source=source_name,
+                source_type='google shopping',
+                location=location,
+                is_usa=True,
+            ))
+        time.sleep(1)
+
+    logger.info(f'  SerpAPI Google Shopping: {len(listings)} listings')
     return listings
 
 
 # ---------------------------------------------------------------------------
-# eBay International
+# SerpAPI — eBay search  (primary, reliable)
 # ---------------------------------------------------------------------------
 
+def scrape_serp_ebay(query: str = 'set of 12 dining chairs') -> list[dict]:
+    if not SERP_API_KEY:
+        logger.info('  SerpAPI eBay: skipped (no API key)')
+        return []
 
-def scrape_ebay_international(query: str = 'set of 12 dining chairs') -> list[dict]:
     listings = []
-    encoded = quote_plus(query)
-    for base_url, country_name in INTL_EBAY_SITES:
-        url = f'{base_url}/sch/i.html?_nkw={encoded}&_sop=10&_ipg=24'
-        r = _get(url)
+    for domain, country, is_us in [
+        ('ebay.com', 'USA', True),
+        ('ebay.co.uk', 'UK', False),
+        ('ebay.ca', 'Canada', False),
+    ]:
+        params = {
+            'engine': 'ebay',
+            'ebay_domain': domain,
+            '_nkw': query,
+            'api_key': SERP_API_KEY,
+            'LH_ItemCondition': '0',  # all conditions
+        }
+        r = _get('https://serpapi.com/search', params=params)
         if not r:
-            time.sleep(1)
             continue
-        soup = BeautifulSoup(r.text, 'html.parser')
-        count = 0
-        for item in soup.select('.s-item'):
-            if count >= 6:
-                break
-            try:
-                title_el = item.select_one('.s-item__title')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                if 'Shop on eBay' in title:
-                    continue
+        try:
+            data = r.json()
+        except Exception:
+            continue
 
-                link_el = item.select_one('a.s-item__link')
-                url_listing = link_el['href'].split('?')[0] if link_el else ''
-
-                price_el = item.select_one('.s-item__price')
-                price_str = price_el.get_text(strip=True) if price_el else ''
-
-                img_el = item.select_one('.s-item__image-wrapper img')
-                img = img_el.get('src', '') if img_el else ''
-
-                loc_el = item.select_one('.s-item__location')
-                location = loc_el.get_text(strip=True).replace('Located in:', '').strip() if loc_el else country_name
-
-                listings.append(_make_listing(
-                    id=_id(url_listing or title + country_name),
-                    title=title,
-                    price=price_str,
-                    image_url=img,
-                    listing_url=url_listing,
-                    source=f'eBay {country_name}',
-                    source_type='auction/marketplace',
-                    location=location or country_name,
-                    country=country_name,
-                    is_usa=False,
-                ))
-                count += 1
-            except Exception:
+        for item in data.get('organic_results', []):
+            title = item.get('title', '')
+            if not title:
                 continue
-        time.sleep(2)
-    logger.info(f"  eBay International: {len(listings)} listings")
+            price_info = item.get('price', {})
+            if isinstance(price_info, dict):
+                price_str = price_info.get('raw', 'See listing')
+                price_num = price_info.get('extracted') or parse_price(price_str)
+            else:
+                price_str = str(price_info) if price_info else 'See listing'
+                price_num = parse_price(price_str)
+            link = item.get('link', '')
+            img = item.get('thumbnail', '')
+            condition = item.get('condition', 'See listing')
+            location = item.get('location', country)
+
+            listings.append(_make_listing(
+                id=_id(link or title),
+                title=title,
+                price=price_str,
+                price_numeric=price_num,
+                image_url=img,
+                listing_url=link,
+                source=f'eBay ({domain})',
+                source_type='auction/marketplace',
+                location=location,
+                country=country,
+                is_usa=is_us,
+                condition=condition,
+            ))
+        time.sleep(1)
+
+    logger.info(f'  SerpAPI eBay: {len(listings)} listings')
     return listings
 
 
 # ---------------------------------------------------------------------------
-# Craigslist (RSS)
+# eBay Finding API  (primary, reliable)
 # ---------------------------------------------------------------------------
 
+def scrape_ebay_api(query: str = 'set of 12 dining chairs') -> list[dict]:
+    if not EBAY_APP_ID:
+        logger.info('  eBay Finding API: skipped (no App ID)')
+        return []
+
+    listings = []
+    url = 'https://svcs.ebay.com/services/search/FindingService/v1'
+    params = {
+        'OPERATION-NAME': 'findItemsByKeywords',
+        'SERVICE-VERSION': '1.0.0',
+        'SECURITY-APPNAME': EBAY_APP_ID,
+        'RESPONSE-DATA-FORMAT': 'JSON',
+        'keywords': query,
+        'paginationInput.entriesPerPage': '50',
+        'sortOrder': 'BestMatch',
+    }
+    r = _get(url, params=params)
+    if not r:
+        logger.info('  eBay Finding API: 0 listings (request failed)')
+        return []
+
+    try:
+        data = r.json()
+        response = data.get('findItemsByKeywordsResponse', [{}])[0]
+        items = response.get('searchResult', [{}])[0].get('item', [])
+    except Exception as e:
+        logger.warning(f'  eBay Finding API parse error: {e}')
+        return []
+
+    for item in items:
+        try:
+            title = item.get('title', [''])[0]
+            link = item.get('viewItemURL', [''])[0]
+            img = item.get('galleryURL', [''])[0]
+            location = item.get('location', ['USA'])[0]
+            condition = item.get('condition', [{}])[0].get('conditionDisplayName', ['See listing'])[0] if item.get('condition') else 'See listing'
+            price_raw = (
+                item.get('sellingStatus', [{}])[0]
+                    .get('currentPrice', [{}])[0]
+                    .get('__value__', '')
+            )
+            price_num = float(price_raw) if price_raw else None
+            price_str = f'${price_num:,.2f}' if price_num else 'See listing'
+
+            listings.append(_make_listing(
+                id=_id(link or title),
+                title=title,
+                price=price_str,
+                price_numeric=price_num,
+                image_url=img,
+                listing_url=link,
+                source='eBay',
+                source_type='auction/marketplace',
+                location=location,
+                condition=condition,
+            ))
+        except Exception:
+            continue
+
+    logger.info(f'  eBay Finding API: {len(listings)} listings')
+    return listings
+
+
+# ---------------------------------------------------------------------------
+# Craigslist (RSS — works from any IP)
+# ---------------------------------------------------------------------------
 
 def scrape_craigslist() -> list[dict]:
     listings = []
@@ -285,10 +352,8 @@ def scrape_craigslist() -> list[dict]:
             if not r:
                 time.sleep(0.5)
                 continue
-            # Parse RSS with built-in XML parser
-            ns = {'rss': 'http://purl.org/rss/1.0/', 'dc': 'http://purl.org/dc/elements/1.1/'}
+            ns = {'rss': 'http://purl.org/rss/1.0/'}
             root = ET.fromstring(r.content)
-            # Support both RSS 2.0 (item) and RSS 1.0 (rss:item)
             items = root.findall('.//item') or root.findall('.//rss:item', ns)
             for entry in items[:4]:
                 def _t(tag):
@@ -299,57 +364,41 @@ def scrape_craigslist() -> list[dict]:
                 summary = _t('description')
                 if not title or not link:
                     continue
-
                 price_m = re.search(r'\$[\d,]+', title + ' ' + summary)
                 price_str = price_m.group(0) if price_m else 'See listing'
-
-                # Extract first image from description HTML
                 img = ''
                 if '<img' in summary:
                     m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', summary)
                     if m:
                         img = m.group(1)
-
                 desc = BeautifulSoup(summary, 'html.parser').get_text()[:300] if summary else title
-
                 listings.append(_make_listing(
-                    id=_id(link),
-                    title=title,
-                    price=price_str,
-                    description=desc,
-                    image_url=img,
-                    listing_url=link,
-                    source='Craigslist',
-                    source_type='secondary market',
-                    location=city_name,
-                    condition='Used',
-                    is_usa=True,
+                    id=_id(link), title=title, price=price_str,
+                    description=desc, image_url=img, listing_url=link,
+                    source='Craigslist', source_type='secondary market',
+                    location=city_name, condition='Used', is_usa=True,
                 ))
         except Exception as e:
-            logger.debug(f"Craigslist {city_code} failed: {e}")
+            logger.debug(f'Craigslist {city_code} failed: {e}')
         time.sleep(0.5)
-    logger.info(f"  Craigslist: {len(listings)} listings")
+    logger.info(f'  Craigslist: {len(listings)} listings')
     return listings
 
 
 # ---------------------------------------------------------------------------
-# Chairish
+# Chairish (HTML fallback)
 # ---------------------------------------------------------------------------
-
 
 def scrape_chairish() -> list[dict]:
     listings = []
-    urls = [
+    for url in [
         'https://www.chairish.com/keyword/set-of-12-dining-chairs',
         'https://www.chairish.com/keyword/twelve-dining-chairs',
-    ]
-    for url in urls:
+    ]:
         r = _get(url)
         if not r:
             continue
         soup = BeautifulSoup(r.text, 'html.parser')
-
-        # Try __NEXT_DATA__ JSON
         nd = soup.find('script', id='__NEXT_DATA__')
         if nd:
             try:
@@ -363,77 +412,44 @@ def scrape_chairish() -> list[dict]:
                     if not title:
                         continue
                     price_raw = p.get('price') or p.get('listPrice', 0)
-                    price_str = f"${price_raw:,.0f}" if isinstance(price_raw, (int, float)) else str(price_raw)
+                    price_str = f'${price_raw:,.0f}' if isinstance(price_raw, (int, float)) else str(price_raw)
                     img = p.get('primaryImage', {}).get('url', '') if isinstance(p.get('primaryImage'), dict) else p.get('imageUrl', '')
                     path = p.get('canonicalPath') or p.get('path', '')
                     link = f'https://www.chairish.com{path}' if path else ''
                     listings.append(_make_listing(
-                        id=_id(link or title),
-                        title=title,
-                        price=price_str,
-                        description=p.get('description', '')[:300],
-                        image_url=img,
-                        listing_url=link,
-                        source='Chairish',
-                        source_type='design resale',
-                        location='USA',
-                        condition='Pre-owned',
-                        is_usa=True,
+                        id=_id(link or title), title=title, price=price_str,
+                        image_url=img, listing_url=link,
+                        source='Chairish', source_type='design resale',
+                        location='USA', condition='Pre-owned', is_usa=True,
                     ))
             except Exception as e:
-                logger.debug(f"Chairish JSON parse: {e}")
-
-        # HTML fallback
-        if not listings:
-            for item in soup.select('[data-product-id], [data-testid*="product"], .product-card, [class*="ProductCard"]')[:20]:
-                title_el = item.select_one('h2, h3, [class*="title"]')
-                price_el = item.select_one('[class*="price"], [class*="Price"]')
-                img_el = item.select_one('img')
-                link_el = item.select_one('a[href]')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                price_str = price_el.get_text(strip=True) if price_el else 'See listing'
-                img = img_el.get('src', '') if img_el else ''
-                href = link_el['href'] if link_el else ''
-                if href and not href.startswith('http'):
-                    href = 'https://www.chairish.com' + href
-                listings.append(_make_listing(
-                    id=_id(href or title),
-                    title=title, price=price_str, image_url=img, listing_url=href,
-                    source='Chairish', source_type='design resale',
-                    location='USA', condition='Pre-owned', is_usa=True,
-                ))
+                logger.debug(f'Chairish JSON parse: {e}')
         time.sleep(2)
-    logger.info(f"  Chairish: {len(listings)} listings")
+    logger.info(f'  Chairish: {len(listings)} listings')
     return listings
 
 
 # ---------------------------------------------------------------------------
-# 1stDibs
+# 1stDibs (HTML fallback)
 # ---------------------------------------------------------------------------
-
 
 def scrape_1stdibs() -> list[dict]:
     listings = []
-    urls = [
+    for url in [
         'https://www.1stdibs.com/furniture/seating/dining-room-chairs/?q=set+of+12',
         'https://www.1stdibs.com/furniture/seating/dining-chairs-sets/',
-    ]
-    for url in urls:
+    ]:
         r = _get(url)
         if not r:
             continue
         soup = BeautifulSoup(r.text, 'html.parser')
-
         nd = soup.find('script', id='__NEXT_DATA__')
         if nd:
             try:
                 data = json.loads(nd.string)
                 pp = data.get('props', {}).get('pageProps', {})
                 items = (
-                    pp.get('listings', []) or
-                    pp.get('results', []) or
+                    pp.get('listings', []) or pp.get('results', []) or
                     pp.get('data', {}).get('listings', {}).get('items', [])
                 )
                 for p in items[:20]:
@@ -441,224 +457,27 @@ def scrape_1stdibs() -> list[dict]:
                     if not title:
                         continue
                     price_info = p.get('price', {})
-                    if isinstance(price_info, dict):
-                        price_str = price_info.get('displayAmount') or str(price_info.get('amount', 'See listing'))
-                    else:
-                        price_str = str(price_info) if price_info else 'See listing'
-                    images = p.get('images', []) or p.get('media', [])
+                    price_str = (price_info.get('displayAmount') if isinstance(price_info, dict) else str(price_info)) or 'See listing'
+                    images = p.get('images', []) or []
                     img = images[0].get('src', '') if images and isinstance(images[0], dict) else ''
                     path = p.get('path') or p.get('pdpPath', '')
                     link = f'https://www.1stdibs.com{path}' if path else ''
-                    loc = p.get('seller', {}).get('address', {}).get('city', '') if isinstance(p.get('seller'), dict) else ''
-
                     listings.append(_make_listing(
-                        id=_id(link or title),
-                        title=title, price=price_str, image_url=img, listing_url=link,
+                        id=_id(link or title), title=title, price=price_str,
+                        image_url=img, listing_url=link,
                         source='1stDibs', source_type='luxury/design',
-                        location=loc or 'USA', condition='Vintage/Pre-owned',
+                        location='USA', condition='Vintage/Pre-owned',
                     ))
             except Exception as e:
-                logger.debug(f"1stDibs JSON parse: {e}")
-
-        # HTML fallback
-        if not listings:
-            for item in soup.select('[data-tn="product-list-item"], [class*="ProductTile"], [class*="product-tile"]')[:20]:
-                title_el = item.select_one('h2, h3, [class*="title"], [data-tn*="title"]')
-                price_el = item.select_one('[class*="price"], [data-tn*="price"]')
-                img_el = item.select_one('img')
-                link_el = item.select_one('a[href]')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                price_str = price_el.get_text(strip=True) if price_el else 'See listing'
-                img = img_el.get('src', '') if img_el else ''
-                href = link_el['href'] if link_el else ''
-                if href and not href.startswith('http'):
-                    href = 'https://www.1stdibs.com' + href
-                listings.append(_make_listing(
-                    id=_id(href or title), title=title, price=price_str,
-                    image_url=img, listing_url=href,
-                    source='1stDibs', source_type='luxury/design',
-                    location='USA', condition='Vintage/Pre-owned',
-                ))
+                logger.debug(f'1stDibs JSON parse: {e}')
         time.sleep(2)
-    logger.info(f"  1stDibs: {len(listings)} listings")
-    return listings
-
-
-# ---------------------------------------------------------------------------
-# Etsy
-# ---------------------------------------------------------------------------
-
-
-def scrape_etsy() -> list[dict]:
-    listings = []
-    query = quote_plus('set of 12 dining chairs')
-    url = f'https://www.etsy.com/search?q={query}&explicit=1&ref=pagination'
-    r = _get(url)
-    if not r:
-        logger.info('  Etsy: 0 listings (request failed)')
-        return listings
-    soup = BeautifulSoup(r.text, 'html.parser')
-
-    for item in soup.select('[data-listing-id], .v2-listing-card, [class*="listing-card"]')[:20]:
-        title_el = item.select_one('h3, h2, [class*="title"], [class*="name"]')
-        price_el = item.select_one('[class*="price"] span, [class*="currency-value"]')
-        img_el = item.select_one('img')
-        link_el = item.select_one('a[href]')
-        if not title_el:
-            continue
-        title = title_el.get_text(strip=True)
-        price_str = price_el.get_text(strip=True) if price_el else 'See listing'
-        img = img_el.get('src', '') if img_el else ''
-        href = link_el['href'] if link_el else ''
-        if href and not href.startswith('http'):
-            href = 'https://www.etsy.com' + href
-        listings.append(_make_listing(
-            id=_id(href or title), title=title, price=price_str,
-            image_url=img, listing_url=href,
-            source='Etsy', source_type='marketplace/vintage',
-            location='USA', condition='Pre-owned/Handmade', is_usa=True,
-        ))
-    logger.info(f"  Etsy: {len(listings)} listings")
-    return listings
-
-
-# ---------------------------------------------------------------------------
-# LiveAuctioneers
-# ---------------------------------------------------------------------------
-
-
-def scrape_liveauctioneers() -> list[dict]:
-    listings = []
-    query = quote_plus('set 12 dining chairs')
-    url = f'https://www.liveauctioneers.com/search/?keyword={query}&status=all&sort=relevance'
-    r = _get(url)
-    if not r:
-        logger.info('  LiveAuctioneers: 0 listings (request failed)')
-        return listings
-    soup = BeautifulSoup(r.text, 'html.parser')
-
-    # Check for JSON data
-    for script in soup.find_all('script', type='application/json'):
-        try:
-            data = json.loads(script.string or '')
-            items = data.get('lots', data.get('results', data.get('items', [])))
-            for p in items[:15]:
-                title = p.get('title') or p.get('name', '')
-                if not title:
-                    continue
-                price_est = p.get('estimate_low') or p.get('sold_price') or p.get('starting_bid', 0)
-                price_str = f"Est. ${price_est:,}" if price_est else 'See auction'
-                img = p.get('image_url') or p.get('thumbnail', '')
-                lid = p.get('item_id') or p.get('id', '')
-                link = f"https://www.liveauctioneers.com/item/{lid}/" if lid else ''
-                loc = p.get('seller', {}).get('city', '') if isinstance(p.get('seller'), dict) else ''
-                listings.append(_make_listing(
-                    id=_id(link or title), title=title, price=price_str,
-                    image_url=img, listing_url=link,
-                    source='LiveAuctioneers', source_type='auction',
-                    location=loc or 'USA', condition='See auction',
-                ))
-        except Exception:
-            continue
-
-    # HTML fallback
-    if not listings:
-        for item in soup.select('[class*="ItemCard"], [class*="lot-card"], [data-lot-id]')[:15]:
-            title_el = item.select_one('h2, h3, [class*="title"]')
-            price_el = item.select_one('[class*="price"], [class*="estimate"]')
-            img_el = item.select_one('img')
-            link_el = item.select_one('a[href]')
-            if not title_el:
-                continue
-            title = title_el.get_text(strip=True)
-            price_str = price_el.get_text(strip=True) if price_el else 'See auction'
-            img = img_el.get('src', '') if img_el else ''
-            href = link_el['href'] if link_el else ''
-            if href and not href.startswith('http'):
-                href = 'https://www.liveauctioneers.com' + href
-            listings.append(_make_listing(
-                id=_id(href or title), title=title, price=price_str,
-                image_url=img, listing_url=href,
-                source='LiveAuctioneers', source_type='auction',
-                location='USA', condition='See auction',
-            ))
-    logger.info(f"  LiveAuctioneers: {len(listings)} listings")
-    return listings
-
-
-# ---------------------------------------------------------------------------
-# Pamono (International designer/vintage)
-# ---------------------------------------------------------------------------
-
-
-def scrape_pamono() -> list[dict]:
-    listings = []
-    query = quote_plus('set of 12 dining chairs')
-    url = f'https://www.pamono.com/en/search?q={query}&category=chairs'
-    r = _get(url)
-    if not r:
-        logger.info('  Pamono: 0 listings (request failed)')
-        return listings
-    soup = BeautifulSoup(r.text, 'html.parser')
-
-    nd = soup.find('script', id='__NEXT_DATA__')
-    if nd:
-        try:
-            data = json.loads(nd.string)
-            items = (
-                data.get('props', {}).get('pageProps', {}).get('products', []) or
-                data.get('props', {}).get('pageProps', {}).get('items', [])
-            )
-            for p in items[:15]:
-                title = p.get('name') or p.get('title', '')
-                if not title:
-                    continue
-                price = p.get('price', {}).get('value') or p.get('price', 0)
-                currency = p.get('price', {}).get('currency', 'EUR') if isinstance(p.get('price'), dict) else 'EUR'
-                price_str = f"{currency} {price:,.0f}" if price else 'See listing'
-                img = (p.get('images', [{}]) or [{}])[0].get('url', '') if isinstance((p.get('images', []) or [None])[0], dict) else ''
-                path = p.get('url') or p.get('slug', '')
-                link = f'https://www.pamono.com{path}' if path and not path.startswith('http') else path
-                country = p.get('country') or p.get('location', {}).get('country', 'Europe')
-                listings.append(_make_listing(
-                    id=_id(link or title), title=title, price=price_str,
-                    image_url=img, listing_url=link,
-                    source='Pamono', source_type='luxury/design',
-                    location=country, country=country, is_usa=False,
-                ))
-        except Exception as e:
-            logger.debug(f"Pamono JSON parse: {e}")
-
-    if not listings:
-        for item in soup.select('[class*="ProductCard"], [class*="product-card"]')[:15]:
-            title_el = item.select_one('h2, h3, [class*="title"]')
-            price_el = item.select_one('[class*="price"]')
-            img_el = item.select_one('img')
-            link_el = item.select_one('a[href]')
-            if not title_el:
-                continue
-            title = title_el.get_text(strip=True)
-            price_str = price_el.get_text(strip=True) if price_el else 'See listing'
-            img = img_el.get('src', '') if img_el else ''
-            href = link_el['href'] if link_el else ''
-            if href and not href.startswith('http'):
-                href = 'https://www.pamono.com' + href
-            listings.append(_make_listing(
-                id=_id(href or title), title=title, price=price_str,
-                image_url=img, listing_url=href,
-                source='Pamono', source_type='luxury/design',
-                location='Europe', country='Europe', is_usa=False,
-            ))
-    logger.info(f"  Pamono: {len(listings)} listings")
+    logger.info(f'  1stDibs: {len(listings)} listings')
     return listings
 
 
 # ---------------------------------------------------------------------------
 # Deduplicate & aggregate
 # ---------------------------------------------------------------------------
-
 
 def deduplicate(listings: list[dict]) -> list[dict]:
     seen: set[str] = set()
@@ -674,30 +493,32 @@ def run_all_scrapers() -> list[dict]:
     """Run all scrapers and return deduplicated, sorted listings."""
     all_listings: list[dict] = []
 
-    scrapers = [
-        ('eBay USA', scrape_ebay_us),
-        ('eBay International', scrape_ebay_international),
-        ('Craigslist', scrape_craigslist),
-        ('Chairish', scrape_chairish),
-        ('1stDibs', scrape_1stdibs),
-        ('Etsy', scrape_etsy),
-        ('LiveAuctioneers', scrape_liveauctioneers),
-        ('Pamono', scrape_pamono),
+    # API-based scrapers run first (most reliable)
+    api_scrapers = [
+        ('SerpAPI Google Shopping', scrape_serp_google_shopping),
+        ('SerpAPI eBay',            scrape_serp_ebay),
+        ('eBay Finding API',        scrape_ebay_api),
     ]
 
-    for name, fn in scrapers:
-        logger.info(f"Scraping {name}...")
+    # HTML scrapers as supplemental sources
+    html_scrapers = [
+        ('Craigslist', scrape_craigslist),
+        ('Chairish',   scrape_chairish),
+        ('1stDibs',    scrape_1stdibs),
+    ]
+
+    for name, fn in api_scrapers + html_scrapers:
+        logger.info(f'Scraping {name}...')
         try:
             results = fn()
             all_listings.extend(results)
         except Exception as e:
-            logger.error(f"{name} scraper raised: {e}", exc_info=True)
-        time.sleep(1.5)
+            logger.error(f'{name} scraper raised: {e}', exc_info=True)
+        time.sleep(1)
 
     all_listings = deduplicate(all_listings)
     all_listings.sort(key=lambda x: x.get('price_numeric') or float('inf'))
-
-    logger.info(f"Total unique listings: {len(all_listings)}")
+    logger.info(f'Total unique listings: {len(all_listings)}')
     return all_listings
 
 
