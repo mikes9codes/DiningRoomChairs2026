@@ -39,6 +39,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check API key configuration
+        env:
+          SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
+          EBAY_APP_ID: ${{ secrets.EBAY_APP_ID }}
+        run: |
+          python -c "
+          import os
+          serp = os.environ.get('SERP_API_KEY', '')
+          ebay = os.environ.get('EBAY_APP_ID', '')
+          print('=== API KEY STATUS ===')
+          print(f'SERP_API_KEY : {\"SET (\" + str(len(serp)) + \" chars)\" if serp else \"NOT SET - SerpAPI scrapers will be skipped\"}')
+          print(f'EBAY_APP_ID  : {\"SET (\" + str(len(ebay)) + \" chars)\" if ebay else \"NOT SET - eBay Finding API will be skipped\"}')
+          print('=====================')
+          if not serp and not ebay:
+              print()
+              print('ACTION REQUIRED: No API keys are configured.')
+              print('Go to: Settings > Secrets and variables > Actions')
+              print('Add SERP_API_KEY (from serpapi.com) and/or EBAY_APP_ID (from developer.ebay.com)')
+          "
+
       - name: Run chair search
         env:
           SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
