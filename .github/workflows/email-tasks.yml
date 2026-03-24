@@ -21,19 +21,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r email-tasks/requirements.txt
+        run: pip install -r email-task-extractor/requirements.txt
 
       - name: Run task extractor
         env:
           VERIZON_EMAIL:        ${{ secrets.VERIZON_EMAIL }}
           VERIZON_APP_PASSWORD: ${{ secrets.VERIZON_APP_PASSWORD }}
           ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python email-tasks/extract_tasks.py
+        run: python email-task-extractor/extract_tasks.py
 
       - name: Commit updated files
         run: |
           git config user.name  "email-tasks-bot"
           git config user.email "actions@github.com"
-          git add tasks.md email-tasks/processed_email_ids.json
+          git add email-task-extractor/tasks.md email-task-extractor/processed_email_ids.json
           git diff --staged --quiet || git commit -m "chore: daily task update $(date +'%Y-%m-%d')"
           git push

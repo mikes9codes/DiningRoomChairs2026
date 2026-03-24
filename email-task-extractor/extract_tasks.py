@@ -31,7 +31,7 @@ SMTP_PORT = 587
 
 SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_FILE = os.path.join(SCRIPT_DIR, "processed_email_ids.json")
-TASKS_FILE     = os.path.join(os.path.dirname(SCRIPT_DIR), "tasks.md")
+TASKS_FILE     = os.path.join(SCRIPT_DIR, "tasks.md")
 
 MAX_BODY_CHARS = 3000  # Caps per-email content sent to API
 MAX_EMAILS     = 50    # Max emails processed per run
