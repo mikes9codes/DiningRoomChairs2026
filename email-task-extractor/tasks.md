@@ -133,3 +133,44 @@ New items are appended below with the date they were found.
 
 - [ ] Investigate and fix the failed 'extract' job in the Daily Email Task Extraction GitHub Actions workflow (2 annotations) - https://github.com/mikes9codes/Projects/actions/runs/23510689022
 
+
+## 2026-03-25
+
+**From:** Envoyer Fine Wines <greg@envoyerfinewines.com>  
+**Subject:** 43-Year-Old Second Growth Bordeaux in Perfect Condition!
+
+- [ ] Decide whether to purchase the 1983 Château Gruaud Larose at $199.99 (limited availability, pre-arrival ETA Q2 2026)
+- [ ] Reply to greg@envoyerfinewines.com to place order if interested
+- [ ] Note: order deadline is unspecified but stock is limited
+
+**From:** mikes9@verizon.net  
+**Subject:** Daily Task Digest 2026-03-24 — 51 action item(s) found
+
+- [ ] Decide whether to bid on NBA Auctions Premier: Rookie Debut Collection (auction closed March 23 - check if still actionable)
+- [ ] Provide company name, address, and filing certificate to Herman Goldsmith
+- [ ] Decide whether to bill the new Rover purchase to company or personal account
+- [ ] Arrange insurance transfer for personal plate
+- [ ] Decide whether to wire funds from personal or company account
+- [ ] Call Herman Goldsmith at 516-569-0000 to confirm wire transfer before sending funds
+- [ ] Wait for John Laguerre's wire total and instructions on Monday before sending payment
+- [ ] Confirm wire details with John Laguerre or Herman Goldsmith by phone before wiring any funds
+- [ ] RSVP for Acker March 26th Pre-Auction Tasting by emailing Kristin@AckerWines.com
+- [ ] Decide whether to attend March 26th Pre-Auction Tasting at 11:30am and La Paulée Auction at The Fifth Avenue Hotel
+- [ ] If attending March 26th event, plan to arrive by 5:30-6:00pm for full coursed dinner service
+- [ ] If attending March 26th event, bring extra bottles of wine to share (BYO encouraged)
+- [ ] Review Acker auction catalog at https://www.ackerwines.com/la-paulee/
+- [ ] Check if Acker Week 12 Online Auction bids need to be placed (deadline was March 23 at 8pm ET - verify if still actionable)
+- [ ] Reply to Nikki Jordan with desired delivery date and NYC address for new Rover so she can arrange insurance
+- [ ] Decide whether Liz should pick up the new Rover and get a lesson instead of having it delivered
+- [ ] Address overdue status of the X7
+- [ ] Send Nikki Jordan the NYC address for Wednesday vehicle exchange
+- [ ] Confirm wire transfer is sent on Tuesday
+- [ ] Be available Wednesday between 12-1pm for vehicle exchange and new Rover demo with Christian
+
+**From:** Zalman Duchman <zalman@colelchabad.org>  
+**Subject:** for your consideration
+
+- [ ] Decide whether to donate $1,800 to provide 50 Seders for holocaust survivors through Colel Chabad
+- [ ] Reply to Zalman Duchman with decision or to discuss further
+- [ ] Review Pesach campaign link provided in email for more information
+
