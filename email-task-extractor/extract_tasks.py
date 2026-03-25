@@ -55,6 +55,20 @@ def decode_str(value):
     return " ".join(result).strip()
 
 
+def sender_name(from_header):
+    """Return just the display name from a From: header, falling back to the address."""
+    decoded = decode_str(from_header)
+    # "John Smith <john@example.com>" -> "John Smith"
+    if "<" in decoded:
+        name = decoded[:decoded.index("<")].strip().strip('"')
+        if name:
+            return name
+    # bare address or unknown — strip the domain for brevity
+    if "@" in decoded:
+        return decoded.split("@")[0].strip("<> ")
+    return decoded
+
+
 def extract_body(msg):
     """Return plain-text body of an email, truncated to MAX_BODY_CHARS."""
     body = ""
@@ -195,7 +209,7 @@ def process_reply_commands(processed_ids, today):
     since_date = (datetime.now() - timedelta(days=REPLY_LOOKBACK)).strftime("%d-%b-%Y")
 
     mail = open_inbox()
-    _, nums = mail.search(None, f'SUBJECT "Daily Task Digest" SINCE {since_date}')
+    _, nums = mail.search(None, f'SUBJECT "Tasks " SINCE {since_date}')
 
     if not nums[0]:
         mail.logout()
@@ -268,7 +282,7 @@ def fetch_new_opened_emails(processed_ids):
         results.append({
             "message_id": msg_id,
             "subject":    decode_str(msg.get("Subject", "(no subject)")),
-            "sender":     decode_str(msg.get("From", "")),
+            "sender":     sender_name(msg.get("From", "")),
             "body":       extract_body(msg),
         })
 
@@ -319,55 +333,50 @@ Example: ["Reply to John about the project timeline", "Schedule dentist appointm
 
 # ── Digest email ───────────────────────────────────────────────────────────────
 def send_digest(date_str, reply_results, new_entries):
-    """Send upgraded digest: reply summary, new items, full task list, instructions."""
+    """Send succinct daily digest."""
     sections = []
 
     # 1. Reply commands processed
     has_reply_activity = any(reply_results[k] for k in ("added", "completed", "unmatched"))
     if has_reply_activity:
-        lines = ["── Reply Commands Processed ──"]
+        lines = ["CHANGES FROM YOUR LAST REPLY"]
         for task in reply_results["added"]:
-            lines.append(f"  + Added: {task}")
-        for query, match in reply_results["completed"]:
-            lines.append(f"  v Completed: {match}")
+            lines.append(f"  + {task}")
+        for _query, match in reply_results["completed"]:
+            lines.append(f"  - {match} [done]")
         for query in reply_results["unmatched"]:
-            lines.append(f"  ? No match found for: '{query}' — task not removed")
+            lines.append(f"  ? '{query}' — no match, not removed")
         sections.append("\n".join(lines))
 
     # 2. New tasks from emails
+    n = 1
     if new_entries:
-        lines = ["── New Action Items Found Today ──"]
+        lines = ["NEW TODAY"]
         for entry in new_entries:
-            lines.append(f"\nFrom: {entry['sender']}")
-            lines.append(f"Subject: {entry['subject']}")
             for task in entry["tasks"]:
-                lines.append(f"  - {task}")
+                lines.append(f"  {n}. [{entry['subject']}] {task}")
+                n += 1
         sections.append("\n".join(lines))
     elif not has_reply_activity:
-        sections.append("No new action items found in today's emails.")
+        sections.append("No new action items today.")
 
     # 3. Full current task list
     current_tasks = read_current_tasks()
     if current_tasks:
-        lines = ["── Your Full Task List ──"]
+        lines = ["ALL TASKS"]
         for i, task in enumerate(current_tasks, 1):
             lines.append(f"  {i}. {task}")
         sections.append("\n".join(lines))
     else:
-        sections.append("── Your Full Task List ──\n  (empty — all caught up!)")
+        sections.append("ALL TASKS\n  (none — all clear!)")
 
-    # 4. Instructions
-    sections.append(
-        "── How to update this list ──\n"
-        "Reply to this email with one command per line:\n"
-        "  add: your new task here\n"
-        "  done: task to mark complete"
-    )
+    # 4. Instructions (compact)
+    sections.append("Reply:  add: <task>   |   done: <task>")
 
     body_text = "\n\n".join(sections)
 
     total_outstanding = len(current_tasks)
-    subject = f"Daily Task Digest {date_str} — {total_outstanding} task(s) outstanding"
+    subject = f"Tasks {date_str} — {total_outstanding} outstanding"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject

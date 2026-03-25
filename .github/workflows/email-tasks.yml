@@ -2,7 +2,7 @@ name: Daily Email Task Extraction
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # 7:00 AM Eastern (UTC-5) = 12:00 UTC
+    - cron: '0 11 * * *'  # 7:00 AM EDT (UTC-4, Mar-Nov); runs at 6 AM during EST (Nov-Mar)
   workflow_dispatch:       # Allows manual trigger from the Actions tab
 
 jobs:
