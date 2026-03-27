@@ -245,3 +245,16 @@ New items are appended below with the date they were found.
 - [ ] Check email for credit card link sent by Land Rover Huntington
 - [ ] Provide credit card information to allow dealer to renew registration for transfer
 
+
+## 2026-03-27
+
+**From:** GitHub <noreply@github.com>  
+**Subject:** [GitHub] Claude is requesting updated permissions
+
+- [ ] Review and decide whether to accept updated permissions for the Claude GitHub App at https://github.com/settings/installations/118517713/permissions/update
+
+**From:** "UVA Clubs" <uvaclubs@mc.virginia.edu>  
+**Subject:** You're Invited! Virtual Admitted Student Celebrations
+
+- [ ] Register for the UVA Virtual Admitted Student Celebrations starting April 7
+
